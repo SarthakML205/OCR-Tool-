@@ -1,5 +1,4 @@
 ---
-metadata
 title: OCR Tool GOT OCR 2
 emoji: 🚀
 colorFrom: blue
