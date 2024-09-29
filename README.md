@@ -11,7 +11,7 @@ This Streamlit application allows users to upload images and extract text from t
 
 ## Demo
 
-Try the live demo on Hugging Face: [GOT-OCR Demo](https://justin4602-ocr.hf.space)
+Try the live demo on Hugging Face: [GOT-OCR](https://justin4602-ocr.hf.space)
 
 ## Setup
 
