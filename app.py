@@ -2,104 +2,118 @@ from transformers import AutoModel, AutoTokenizer, Qwen2VLForConditionalGenerati
 import streamlit as st
 import os
 from PIL import Image
+import requests
 import torch
+import json
 from torchvision import io
-import re
 from typing import Dict
+import re
 
 @st.cache_resource
-def load_model():
-    # Loading the CPU-based model for GOT OCR
-    token = AutoTokenizer.from_pretrained('srimanth-d/GOT_CPU', trust_remote_code=True)
-    model = AutoModel.from_pretrained('srimanth-d/GOT_CPU', trust_remote_code=True, use_safetensors=True, pad_token_id=token.eos_token_id)
-    model.eval()
-    return model, token
+def init_model():
+    tokenizer = AutoTokenizer.from_pretrained('srimanth-d/GOT_CPU', trust_remote_code=True)
+    model = AutoModel.from_pretrained('srimanth-d/GOT_CPU', trust_remote_code=True, use_safetensors=True, pad_token_id=tokenizer.eos_token_id)
+    model = model.eval()
+    return model, tokenizer
 
-def load_gpu_model():
-    # Initialize the GPU model for faster inference
-    token = AutoTokenizer.from_pretrained('ucaslcl/GOT-OCR2_0', trust_remote_code=True)
-    model = AutoModel.from_pretrained('ucaslcl/GOT-OCR2_0', trust_remote_code=True, low_cpu_mem_usage=True, device_map='cuda', use_safetensors=True, pad_token_id=token.eos_token_id)
-    model.eval().cuda()
-    return model, token
+def init_gpu_model():
+    tokenizer = AutoTokenizer.from_pretrained('ucaslcl/GOT-OCR2_0', trust_remote_code=True)
+    model = AutoModel.from_pretrained('ucaslcl/GOT-OCR2_0', trust_remote_code=True, low_cpu_mem_usage=True, device_map='cuda', use_safetensors=True, pad_token_id=tokenizer.eos_token_id)
+    model = model.eval().cuda()
+    return model, tokenizer
 
-def load_qwen_vl_model():
-    # Load Qwen model for handling visual-linguistic tasks
+def init_qwen_model():
     model = Qwen2VLForConditionalGeneration.from_pretrained("Qwen/Qwen2-VL-2B-Instruct", device_map="cpu", torch_dtype=torch.float16)
-    proc = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-2B-Instruct")
-    return model, proc
+    processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-2B-Instruct")
+    return model, processor
 
-def process_qwen_output(image_file, model, processor):
+def get_quen_op(image_file, model, processor):
     try: 
-        img = Image.open(image_file).convert('RGB')
-        # Setting up the conversation format for Qwen2-VL
-        dialogue = [
+        image = Image.open(image_file).convert('RGB')
+        conversation = [
             {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": "Extract text from this image."}
+                "role":"user",
+                "content":[
+                    {
+                        "type":"image",
+                    },
+                    {
+                        "type":"text",
+                        "text":"Extract text from this image."
+                    }
                 ]
             }
         ]
-        text_query = processor.apply_chat_template(dialogue, add_generation_prompt=True)
-        inputs = processor(text=[text_query], images=[img], padding=True, return_tensors="pt")
+        text_prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
+        inputs = processor(text=[text_prompt], images=[image], padding=True, return_tensors="pt")
         inputs = {k: v.to(torch.float32) if torch.is_floating_point(v) else v for k, v in inputs.items()}
 
-        config = {
+        generation_config = {
             "max_new_tokens": 32,
             "do_sample": False,
             "top_k": 20,
-            "top_p": 0.9,
+            "top_p": 0.90,
             "temperature": 0.4,
             "num_return_sequences": 1,
             "pad_token_id": processor.tokenizer.pad_token_id,
             "eos_token_id": processor.tokenizer.eos_token_id,
         }
 
-        output_ids = model.generate(**inputs, **config)
-        generated_ids = output_ids[:, inputs.get('input_ids', torch.empty(0)).shape[1]:]
-
+        output_ids = model.generate(**inputs, **generation_config)
+        if 'input_ids' in inputs:
+                generated_ids = output_ids[:, inputs['input_ids'].shape[1]:]
+        else:
+            generated_ids = output_ids
+            
         output_text = processor.batch_decode(generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-        return output_text[0] if output_text else "No text found in the image."
+            
+        return output_text[:] if output_text else "No text extracted from the image."
     
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"An error occurred: {str(e)}"
 
 @st.cache_data
-def extract_text_from_image(image_path, model, tokenizer):
-    # Extract text using the specified model and tokenizer
-    result = model.chat(tokenizer, image_path, ocr_type='ocr')
-    return result
+def get_text(image_file, _model, _tokenizer):
+    res = _model.chat(_tokenizer, image_file, ocr_type='ocr')
+    return res
 
-def emphasize_text(text, term):
-    # Highlight occurrences of search term in the extracted text
-    if not term:
+def highlight_text(text, search_term):
+    if not search_term:
         return text
-    pattern = re.compile(re.escape(term), re.IGNORECASE)
-    return pattern.sub(lambda match: f'<span style="background-color: yellow;">{match.group()}</span>', text)
+    pattern = re.compile(re.escape(search_term), re.IGNORECASE)
+    return pattern.sub(lambda m: f'<span style="background-color: grey;">{m.group()}</span>', text)
 
-st.title("OCR Tool - GOT OCR 2.0")
-st.write("Upload an image to perform OCR and extract text.")
+def save_text_to_json(file_name, text_data):
+    """Save the extracted text into a JSON file."""
+    with open(file_name, 'w') as json_file:
+        json.dump({"extracted_text": text_data}, json_file, indent=4)
+    st.success(f"Text saved to {file_name}")
 
-# Load the CPU model
-OCR_MODEL, OCR_TOKENIZER = load_model()
+st.title("Extract text from the image using  - GOT-OCR2.0 and search keyword")
+st.write("Upload an image")
 
-image_file = st.file_uploader("Upload your image (JPG/PNG/JPEG)", type=['jpg', 'png', 'jpeg'])
+MODEL, PROCESSOR = init_model()
+
+image_file = st.file_uploader("Upload Image", type=['jpg', 'png', 'jpeg'])
 
 if image_file:
-    # Create folder for storing images if it doesn't exist
-    if not os.path.exists("image_uploads"):
-        os.makedirs("image_uploads")
-    
-    img_path = os.path.join("image_uploads", image_file.name)
-    with open(img_path, "wb") as img_file:
-        img_file.write(image_file.getbuffer())
+    if not os.path.exists("images"):
+        os.makedirs("images")
+    with open(f"images/{image_file.name}", "wb") as f:
+        f.write(image_file.getbuffer())
 
-    # Extract text from the uploaded image
-    ocr_text = extract_text_from_image(img_path, OCR_MODEL, OCR_TOKENIZER)
+    image_file = f"images/{image_file.name}"
+
+    text = get_text(image_file, MODEL, PROCESSOR)
+
+    print(text)
     
-    # Search functionality: Search a term in the extracted text
-    search_input = st.text_input("Search for a term:")
-    highlighted_result = emphasize_text(ocr_text, search_input)
+    # Add search functionality
+    search_term = st.text_input("Enter a word or phrase to search:")
+    highlighted_text = highlight_text(text, search_term)
     
-    st.markdown(highlighted_result, unsafe_allow_html=True)
+    st.markdown(highlighted_text, unsafe_allow_html=True)
+
+    # Save the extracted text in JSON
+    json_file_path = f"{image_file}_extracted.json"
+    save_text_to_json(json_file_path, text)
